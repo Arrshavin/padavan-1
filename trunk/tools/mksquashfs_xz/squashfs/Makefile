@@ -25,7 +25,7 @@ ifndef CONFIG
 #
 # LZMA2 compression.
 #
-# XZ Utils liblzma (http://tukaani.org/xz/) is supported
+# XZ Utils liblzma (https://tukaani.org/xz/) is supported
 #
 # Development packages (libraries and header files) should be
 # supported by most modern distributions.  Please refer to
@@ -178,7 +178,7 @@ INSTALL_MANPAGES_DIR = $(INSTALL_PREFIX)/man/man1
 # LZMA1 compression is obsolete, and the newer and better XZ (LZMA2)
 # compression should be used in preference.
 #
-# Both XZ Utils liblzma (http://tukaani.org/xz/) and LZMA SDK
+# Both XZ Utils liblzma (https://tukaani.org/xz/) and LZMA SDK
 # (http://www.7-zip.org/sdk.html) are supported
 #
 # To build using XZ Utils liblzma - install the library and uncomment
@@ -221,11 +221,13 @@ INCLUDEDIR = -I.
 
 MKSQUASHFS_OBJS = mksquashfs.o read_fs.o action.o swap.o pseudo.o compressor.o \
 	sort.o progressbar.o info.o restore.o process_fragments.o \
-	caches-queues-lists.o reader.o tar.o date.o memory.o mksquashfs_help.o
+	caches-queues-lists.o reader.o tar.o date.o memory.o mksquashfs_help.o \
+	print_pager.o
 
 UNSQUASHFS_OBJS = unsquashfs.o unsquash-1.o unsquash-2.o unsquash-3.o \
 	unsquash-4.o unsquash-123.o unsquash-34.o unsquash-1234.o unsquash-12.o \
-	swap.o compressor.o unsquashfs_info.o date.o memory.o
+	swap.o compressor.o unsquashfs_info.o date.o memory.o print_pager.o \
+	unsquashfs_help.o
 
 CFLAGS ?= -O2
 CFLAGS += $(EXTRA_CFLAGS) $(INCLUDEDIR) -D_FILE_OFFSET_BITS=64 \
@@ -488,6 +490,10 @@ xz_wrapper.o: xz_wrapper.c squashfs_fs.h xz_wrapper.h compressor.h
 xz_wrapper_extended.o: xz_wrapper_extended.c squashfs_fs.h xz_wrapper.h compressor.h
 
 mksquashfs_help.o: mksquashfs_help.h Makefile
+
+print_pager.o: print_pager.c print_pager.h
+
+unsquashfs_help.o: unsquashfs_help.c unsquashfs_help.h
 
 unsquashfs: $(UNSQUASHFS_OBJS)
 	$(CC) $(LDFLAGS) $(EXTRA_LDFLAGS) $(UNSQUASHFS_OBJS) $(LIBS) -o $@

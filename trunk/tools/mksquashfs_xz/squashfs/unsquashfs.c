@@ -35,6 +35,8 @@
 #include "nprocessors_compat.h"
 #include "memory_compat.h"
 #include "memory.h"
+#include "print_pager.h"
+#include "unsquashfs_help.h"
 
 #ifdef __linux__
 #include <sys/sysmacros.h>
@@ -1041,6 +1043,36 @@ static void queue_dir(char *pathname, struct dir *dir)
 }
 
 
+static void unlink_file(char *pathname, struct stat *stat_buf)
+{
+	struct stat buf;
+	int res;
+
+	if(stat_buf == NULL) {
+		res = lstat(pathname, stat_buf = &buf);
+		if(res == -1) {
+			if(errno != ENOENT)
+				EXIT_UNSQUASH("unlink_file: failed to lstat file %s,"
+					" because %s\n", pathname, strerror(errno));
+			else
+				return;
+		}
+	}
+
+	if(S_ISDIR(stat_buf->st_mode)) {
+		res = rmdir(pathname);
+		if(res == -1)
+			EXIT_UNSQUASH("unlink_file: failed to rmdir directory %s,"
+				" because %s\n", pathname, strerror(errno));
+	} else {
+		res = unlink(pathname);
+		if(res == -1)
+			EXIT_UNSQUASH("unlink_file: failed to unlink file %s,"
+				" because %s\n", pathname, strerror(errno));
+	}
+}
+
+
 static int write_file(struct inode *inode, char *pathname)
 {
 	unsigned int file_fd, i;
@@ -1057,10 +1089,7 @@ static int write_file(struct inode *inode, char *pathname)
 
 	res = lstat(pathname, &buf);
 	if(res != -1 && force) {
-		res = unlink(pathname);
-		if(res == -1)
-			EXIT_UNSQUASH("write_file: failed to unlink file %s,"
-				" because %s\n", pathname, strerror(errno));
+		unlink_file(pathname, &buf);
 	} else if(res != -1)
 		EXIT_UNSQUASH("write_file: file %s already exists\n", pathname);
 	else if(errno != ENOENT)
@@ -1206,7 +1235,7 @@ static int create_inode(char *pathname, struct inode *i)
 	if(link_path) {
 		TRACE("create_inode: hard link\n");
 		if(force)
-			unlink(pathname);
+			unlink_file(pathname, NULL);
 
 		if(link(link_path, pathname) == -1) {
 			EXIT_UNSQUASH_IGNORE("create_inode: failed to create"
@@ -1236,7 +1265,7 @@ static int create_inode(char *pathname, struct inode *i)
 				i->data);
 
 			if(force)
-				unlink(pathname);
+				unlink_file(pathname, NULL);
 
 			res = symlink(i->symlink, pathname);
 			if(res == -1) {
@@ -1286,7 +1315,7 @@ static int create_inode(char *pathname, struct inode *i)
 			TRACE("create_inode: dev, rdev 0x%llx\n", i->data);
 			if(root_process) {
 				if(force)
-					unlink(pathname);
+					unlink_file(pathname, NULL);
 
 				/* Based on new_decode_dev() in kernel source */
 				major = (i->data & 0xfff00) >> 8;
@@ -1323,7 +1352,7 @@ static int create_inode(char *pathname, struct inode *i)
 			TRACE("create_inode: fifo\n");
 
 			if(force)
-				unlink(pathname);
+				unlink_file(pathname, NULL);
 
 			res = mknod(pathname, S_IFIFO, 0);
 			if(res == -1) {
@@ -1342,6 +1371,9 @@ static int create_inode(char *pathname, struct inode *i)
 		case SQUASHFS_SOCKET_TYPE:
 		case SQUASHFS_LSOCKET_TYPE:
 			TRACE("create_inode: socket\n");
+
+			if(force)
+				unlink_file(pathname, NULL);
 
 			res = mknod(pathname, S_IFSOCK, 0);
 			if (res == -1) {
@@ -3863,202 +3895,16 @@ static int parse_excludes(int argc, char *argv[])
 }
 
 
-static void print_cat_options(FILE *stream, char *name)
+static void check_pager()
 {
-	fprintf(stream, "SYNTAX: %s [OPTIONS] FILESYSTEM [list of files to cat to stdout]\n", name);
-	fprintf(stream, "\t-v[ersion]\t\tprint version, licence and copyright ");
-	fprintf(stream, "information\n");
-	fprintf(stream, "\t-p[rocessors] <number>\tuse <number> processors.  ");
-	fprintf(stream, "By default will use\n");
-	fprintf(stream, "\t\t\t\tthe number of processors available\n");
-	fprintf(stream, "\t-mem <size>\t\tuse <size> physical memory for ");
-	fprintf(stream, "caches.  Use K, M\n\t\t\t\tor G to specify Kbytes,");
-	fprintf(stream, " Mbytes or Gbytes\n\t\t\t\trespectively.  Default 512 Mbytes\n");
-	fprintf(stream, "\t-mem-percent <percent>\tuse <percent> physical ");
-	fprintf(stream, "memory for caches.\n");
-	fprintf(stream, "\t-o[ffset] <bytes>\tskip <bytes> at start of FILESYSTEM.\n");
-	fprintf(stream, "\t\t\t\tOptionally a suffix of K, M or G can be given to\n");
-	fprintf(stream, "\t\t\t\tspecify Kbytes, Mbytes or Gbytes respectively\n");
-	fprintf(stream, "\t\t\t\t(default 0 bytes).\n");
-	fprintf(stream, "\t-ig[nore-errors]\ttreat errors writing files to stdout ");
-	fprintf(stream, "as\n\t\t\t\tnon-fatal\n");
-	fprintf(stream, "\t-st[rict-errors]\ttreat all errors as fatal\n");
-	fprintf(stream, "\t-no-exit[-code]\t\tdon't set exit code (to nonzero) on ");
-	fprintf(stream, "non-fatal\n\t\t\t\terrors\n");
-	fprintf(stream, "\t-no-wild[cards]\t\tdo not use wildcard matching in filenames\n");
-	fprintf(stream, "\t-r[egex]\t\ttreat filenames as POSIX regular ");
-	fprintf(stream, "expressions\n");
-	fprintf(stream, "\t\t\t\trather than use the default shell ");
-	fprintf(stream, "wildcard\n\t\t\t\texpansion (globbing)\n");
-	fprintf(stream, "\t-h[elp]\t\t\toutput options text to stdout\n");
-	fprintf(stream, "\nDecompressors available:\n");
-	display_compressors(stream, "", "");
+	char * string = getenv("PAGER");
 
-	fprintf(stream, "\nExit status:\n");
-	fprintf(stream, "  0\tThe file or files were output to stdout OK.\n");
-	fprintf(stream, "  1\tFATAL errors occurred, e.g. filesystem ");
-	fprintf(stream, "corruption, I/O errors.\n");
-	fprintf(stream, "\tSqfscat did not continue and aborted.\n");
-	fprintf(stream, "  2\tNon-fatal errors occurred, e.g. not a regular ");
-	fprintf(stream, "file, or failed to resolve\n\tpathname.  Sqfscat ");
-	fprintf(stream, "continued and did not abort.\n");
-	fprintf(stream, "\nSee -ignore-errors, -strict-errors and ");
-	fprintf(stream, "-no-exit-code options for how they affect\nthe exit ");
-	fprintf(stream, "status.\n");
-	fprintf(stream, "\nSee also:\n");
-	fprintf(stream, "The README for the Squashfs-tools 4.6.1 release, ");
-	fprintf(stream, "describing the new features can be\n");
-	fprintf(stream, "read here https://github.com/plougher/squashfs-tools/blob/master/README-4.6.1\n");
+	if(string != NULL) {
+		int res = check_and_set_pager(string);
 
-	fprintf(stream, "\nThe Squashfs-tools USAGE guide can be read here\n");
-	fprintf(stream, "https://github.com/plougher/squashfs-tools/blob/master/USAGE-4.6\n");
-}
-
-
-static void print_options(FILE *stream, char *name)
-{
-	fprintf(stream, "SYNTAX: %s [OPTIONS] FILESYSTEM [files ", name);
-	fprintf(stream, "to extract or exclude (with -excludes) or cat (with -cat )]\n");
-	fprintf(stream, "\nFilesystem extraction (filtering) options:\n");
-	fprintf(stream, "\t-d[est] <pathname>\textract to <pathname>, ");
-	fprintf(stream, "default \"squashfs-root\".\n\t\t\t\tThis option ");
-	fprintf(stream, "also sets the prefix used when\n\t\t\t\tlisting the ");
-	fprintf(stream, "filesystem\n");
-	fprintf(stream, "\t-max[-depth] <levels>\tdescend at most <levels> of ");
-	fprintf(stream, "directories when\n\t\t\t\textracting\n");
-	fprintf(stream, "\t-excludes\t\ttreat files on command line as exclude files\n");
-	fprintf(stream, "\t-ex[clude-list]\t\tlist of files to be excluded, terminated\n");
-	fprintf(stream, "\t\t\t\twith ; e.g. file1 file2 ;\n");
-	fprintf(stream, "\t-extract-file <file>\tlist of directories or files to ");
-	fprintf(stream, "extract.\n\t\t\t\tOne per line\n");
-	fprintf(stream, "\t-exclude-file <file>\tlist of directories or files to ");
-	fprintf(stream, "exclude.\n\t\t\t\tOne per line\n");
-	fprintf(stream, "\t-match\t\t\tabort if any extract file does not ");
-	fprintf(stream, "match on\n\t\t\t\tanything, and can not be ");
-	fprintf(stream, "resolved.  Implies\n\t\t\t\t-missing-symlinks and ");
-	fprintf(stream, "-no-wildcards\n");
-	fprintf(stream, "\t-follow[-symlinks]\tfollow symlinks in extract files, and ");
-	fprintf(stream, "add all\n\t\t\t\tfiles/symlinks needed to resolve extract ");
-	fprintf(stream, "file.\n\t\t\t\tImplies -no-wildcards\n");
-	fprintf(stream, "\t-missing[-symlinks]\tUnsquashfs will abort if any symlink ");
-	fprintf(stream, "can't be\n\t\t\t\tresolved in -follow-symlinks\n");
-	fprintf(stream, "\t-no-wild[cards]\t\tdo not use wildcard matching in extract ");
-	fprintf(stream, "and\n\t\t\t\texclude names\n");
-	fprintf(stream, "\t-r[egex]\t\ttreat extract names as POSIX regular ");
-	fprintf(stream, "expressions\n");
-	fprintf(stream, "\t\t\t\trather than use the default shell ");
-	fprintf(stream, "wildcard\n\t\t\t\texpansion (globbing)\n");
-	fprintf(stream, "\t-all[-time] <time>\tset all file timestamps to ");
-	fprintf(stream, "<time>, rather than\n\t\t\t\tthe time stored in the ");
-	fprintf(stream, "filesystem inode.  <time>\n\t\t\t\tcan be an ");
-	fprintf(stream, "unsigned 32-bit int indicating\n\t\t\t\tseconds ");
-	fprintf(stream, "since the epoch (1970-01-01) or a string\n\t\t\t\t");
-	fprintf(stream, "value which is passed to the \"date\" command to\n");
-	fprintf(stream, "\t\t\t\tparse. Any string value which the date ");
-	fprintf(stream, "command\n\t\t\t\trecognises can be used such as ");
-	fprintf(stream, "\"now\", \"last\n\t\t\t\tweek\", or \"Wed Feb 15 ");
-	fprintf(stream, "21:02:39 GMT 2023\"\n");
-	fprintf(stream, "\t-cat\t\t\tcat the files on the command line to stdout\n");
-	fprintf(stream, "\t-f[orce]\t\tif destination directory already ");
-	fprintf(stream, "exists, descend\n\t\t\t\tinto it and any ");
-	fprintf(stream, "sub-directories, and unlink\n\t\t\t\t(delete) files ");
-	fprintf(stream, "if they already exist before\n\t\t\t\textracting ");
-	fprintf(stream, "to them\n");
-	fprintf(stream, "\t-pf <file>\t\toutput a pseudo file equivalent ");
-	fprintf(stream, "of the input\n\t\t\t\tSquashfs filesystem, use - for stdout\n");
-	fprintf(stream, "\nFilesystem information and listing options:\n");
-	fprintf(stream, "\t-s[tat]\t\t\tdisplay filesystem superblock information\n");
-	fprintf(stream, "\t-max[-depth] <levels>\tdescend at most <levels> of ");
-	fprintf(stream, "directories when\n\t\t\t\tlisting\n");
-	fprintf(stream, "\t-i[nfo]\t\t\tprint files as they are extracted\n");
-	fprintf(stream, "\t-li[nfo]\t\tprint files as they are extracted with file\n");
-	fprintf(stream, "\t\t\t\tattributes (like ls -l output)\n");
-	fprintf(stream, "\t-l[s]\t\t\tlist filesystem, but do not extract files\n");
-	fprintf(stream, "\t-ll[s]\t\t\tlist filesystem with file attributes (like\n");
-	fprintf(stream, "\t\t\t\tls -l output), but do not extract files\n");
-	fprintf(stream, "\t-lln[umeric]\t\tsame as -lls but with numeric uids and gids\n");
-	fprintf(stream, "\t-lc\t\t\tlist filesystem concisely, displaying only ");
-	fprintf(stream, "files\n\t\t\t\tand empty directories.  Do not extract files\n");
-	fprintf(stream, "\t-llc\t\t\tlist filesystem concisely with file ");
-	fprintf(stream, "attributes,\n\t\t\t\tdisplaying only files and empty ");
-	fprintf(stream, "directories.\n\t\t\t\tDo not extract files\n");
-	fprintf(stream, "\t-full[-precision]\tuse full precision when ");
-	fprintf(stream, "displaying times\n\t\t\t\tincluding seconds.  Use ");
-	fprintf(stream, "with -linfo, -lls, -lln\n\t\t\t\tand -llc\n");
-	fprintf(stream, "\t-UTC\t\t\tuse UTC rather than local time zone ");
-	fprintf(stream, "when\n\t\t\t\tdisplaying time\n");
-	fprintf(stream, "\t-mkfs-time\t\tdisplay filesystem superblock time, which is an\n");
-	fprintf(stream, "\t\t\t\tunsigned 32-bit int representing the time in\n");
-	fprintf(stream, "\t\t\t\tseconds since the epoch (1970-01-01)\n");
-	fprintf(stream, "\nFilesystem extended attribute (xattrs) options:\n");
-	fprintf(stream, "\t-no[-xattrs]\t\tdo not extract xattrs in file system");
-	fprintf(stream, NOXOPT_STR"\n");
-	fprintf(stream, "\t-x[attrs]\t\textract xattrs in file system" XOPT_STR "\n");
-	fprintf(stream, "\t-xattrs-exclude <regex>\texclude any xattr names ");
-	fprintf(stream, "matching <regex>.\n\t\t\t\t<regex> is a POSIX ");
-	fprintf(stream, "regular expression, e.g.\n\t\t\t\t-xattrs-exclude ");
-	fprintf(stream, "'^user.' excludes xattrs from\n\t\t\t\tthe user ");
-	fprintf(stream, "namespace\n");
-	fprintf(stream, "\t-xattrs-include <regex>\tinclude any xattr names ");
-	fprintf(stream, "matching <regex>.\n\t\t\t\t<regex> is a POSIX ");
-	fprintf(stream, "regular expression, e.g.\n\t\t\t\t-xattrs-include ");
-	fprintf(stream, "'^user.' includes xattrs from\n\t\t\t\tthe user ");
-	fprintf(stream, "namespace\n");
-	fprintf(stream, "\nUnsquashfs runtime options:\n");
-	fprintf(stream, "\t-v[ersion]\t\tprint version, licence and ");
-	fprintf(stream, "copyright information\n");
-	fprintf(stream, "\t-p[rocessors] <number>\tuse <number> processors.  ");
-	fprintf(stream, "By default will use\n");
-	fprintf(stream, "\t\t\t\tthe number of processors available\n");
-	fprintf(stream, "\t-mem <size>\t\tuse <size> physical memory for ");
-	fprintf(stream, "caches.  Use K, M\n\t\t\t\tor G to specify Kbytes,");
-	fprintf(stream, " Mbytes or Gbytes\n\t\t\t\trespectively.  Default 512 Mbytes\n");
-	fprintf(stream, "\t-mem-percent <percent>\tuse <percent> physical ");
-	fprintf(stream, "memory for caches.\n");
-	fprintf(stream, "\t-q[uiet]\t\tno verbose output\n");
-	fprintf(stream, "\t-n[o-progress]\t\tdo not display the progress ");
-	fprintf(stream, "bar\n");
-	fprintf(stream, "\t-percentage\t\tdisplay a percentage rather than ");
-	fprintf(stream, "the full\n\t\t\t\tprogress bar.  Can be used with ");
-	fprintf(stream, "dialog --gauge\n\t\t\t\tetc.\n");
-	fprintf(stream, "\t-ig[nore-errors]\ttreat errors writing files to ");
-	fprintf(stream, "output as\n\t\t\t\tnon-fatal\n");
-	fprintf(stream, "\t-st[rict-errors]\ttreat all errors as fatal\n");
-	fprintf(stream, "\t-no-exit[-code]\t\tdo not set exit code (to ");
-	fprintf(stream, "nonzero) on non-fatal\n\t\t\t\terrors\n");
-	fprintf(stream, "\nMiscellaneous options:\n");
-	fprintf(stream, "\t-h[elp]\t\t\toutput this options text to stdout\n");
-	fprintf(stream, "\t-o[ffset] <bytes>\tskip <bytes> at start of FILESYSTEM.  ");
-	fprintf(stream, "Optionally\n\t\t\t\ta suffix of K, M or G can be given to ");
-	fprintf(stream, "specify\n\t\t\t\tKbytes, Mbytes or Gbytes respectively ");
-	fprintf(stream, "(default\n\t\t\t\t0 bytes).\n");
-	fprintf(stream, "\t-fstime\t\t\tsynonym for -mkfs-time\n");
-	fprintf(stream, "\t-e[f] <extract file>\tsynonym for -extract-file\n");
-	fprintf(stream, "\t-exc[f] <exclude file>\tsynonym for -exclude-file\n");
-	fprintf(stream, "\t-L\t\t\tsynonym for -follow-symlinks\n");
-	fprintf(stream, "\t-pseudo-file <file>\talternative name for -pf\n");
-	fprintf(stream, "\nDecompressors available:\n");
-	display_compressors(stream, "", "");
-
-	fprintf(stream, "\nExit status:\n");
-	fprintf(stream, "  0\tThe filesystem listed or extracted OK.\n");
-	fprintf(stream, "  1\tFATAL errors occurred, e.g. filesystem corruption, ");
-	fprintf(stream, "I/O errors.\n");
-	fprintf(stream, "\tUnsquashfs did not continue and aborted.\n");
-	fprintf(stream, "  2\tNon-fatal errors occurred, e.g. no support for ");
-	fprintf(stream, "XATTRs, Symbolic links\n\tin output filesystem or ");
-	fprintf(stream, "couldn't write permissions to output filesystem.\n"); 
-	fprintf(stream, "\tUnsquashfs continued and did not abort.\n");
-	fprintf(stream, "\nSee -ignore-errors, -strict-errors and ");
-	fprintf(stream, "-no-exit-code options for how they affect\nthe exit ");
-	fprintf(stream, "status.\n");
-	fprintf(stream, "\nSee also:\n");
-	fprintf(stream, "The README for the Squashfs-tools 4.6.1 release, ");
-	fprintf(stream, "describing the new features can be\n");
-	fprintf(stream, "read here https://github.com/plougher/squashfs-tools/blob/master/README-4.6.1\n");
-
-	fprintf(stream, "\nThe Squashfs-tools USAGE guide can be read here\n");
-	fprintf(stream, "https://github.com/plougher/squashfs-tools/blob/master/USAGE-4.6\n");
+		if(res == FALSE)
+			exit(1);
+	}
 }
 
 
@@ -4089,9 +3935,24 @@ static int parse_cat_options(int argc, char *argv[])
 	for(i = 1; i < argc; i++) {
 		if(*argv[i] != '-')
 			break;
-		if(strcmp(argv[i], "-help") == 0 || strcmp(argv[i], "-h") == 0) {
-			print_cat_options(stdout, argv[0]);
-			exit(0);
+		if(strcmp(argv[i], "-help") == 0 || strcmp(argv[i], "-h") == 0)
+			sqfscat_help(FALSE);
+		else if(strcmp(argv[i], "-help-all") == 0 || strcmp(argv[i], "-ha") == 0)
+			sqfscat_help_all();
+		else if(strcmp(argv[i], "-help-option") == 0 || strcmp(argv[i], "-ho") == 0) {
+			if(++i == argc) {
+				ERROR("%s: %s missing regex\n", argv[0], argv[i - 1]);
+				sqfscat_option_help(argv[i - 1]);
+			}
+
+			sqfscat_option(argv[i - 1], argv[i]);
+		} else if(strcmp(argv[i], "-help-section") == 0 || strcmp(argv[i], "-hs") == 0) {
+			if(++i == argc) {
+				ERROR("%s: %s missing section\n", argv[0], argv[i - 1]);
+				sqfscat_option_help(argv[i - 1]);
+			}
+
+			sqfscat_section(argv[i - 1], argv[i]);
 		} else if(strcmp(argv[i], "-no-exit-code") == 0 ||
 				strcmp(argv[i], "-no-exit") == 0)
 			set_exit_code = FALSE;
@@ -4115,7 +3976,7 @@ static int parse_cat_options(int argc, char *argv[])
 						&processors)) {
 				ERROR("%s: -processors missing or invalid "
 					"processor number\n", argv[0]);
-				exit(1);
+				sqfscat_option_help(argv[i - 1]);
 			}
 			if(processors < 1) {
 				ERROR("%s: -processors should be 1 or larger\n",
@@ -4129,6 +3990,7 @@ static int parse_cat_options(int argc, char *argv[])
 					!parse_numberll(argv[i], &number, 1)) {
 				ERROR("%s: -mem missing or invalid mem size\n",
 					 argv[0]);
+				sqfscat_option_help(argv[i - 1]);
 				exit(1);
 			}
 
@@ -4163,7 +4025,7 @@ static int parse_cat_options(int argc, char *argv[])
 				ERROR("%s: -mem-percent missing or invalid "
 					"percentage: it should be 1 - 75%\n",
 					 argv[0]);
-				exit(1);
+				sqfscat_option_help(argv[i - 1]);
 			}
 
 			phys_mem = get_physical_memory();
@@ -4228,12 +4090,10 @@ static int parse_cat_options(int argc, char *argv[])
 									1)) {
 				ERROR("%s: %s missing or invalid offset size\n",
 							argv[0], argv[i - 1]);
-				exit(1);
+				sqfscat_option_help(argv[i - 1]);
 			}
-		} else {
-			print_cat_options(stderr, argv[0]);
-			exit(1);
-		}
+		} else
+			sqfscat_invalid_option(argv[i]);
 	}
 
 	if(strict_errors && ignore_errors)
@@ -4247,9 +4107,14 @@ static int parse_cat_options(int argc, char *argv[])
 		EXIT_UNSQUASH("Both -no-wildcards and -regex should not be "
 								"set\n");
 	if(i == argc) {
-		if(!version)
-			print_cat_options(stderr, argv[0]);
-		exit(1);
+		if(!version) {
+			ERROR("%s: fatal error: no input filesystem specified on command line\n\n", argv[0]);
+			sqfscat_help(TRUE);
+		} else
+			exit(1);
+	} else if(i + 1 == argc) {
+		ERROR("%s: fatal error: no files specified on command line\n\n", argv[0]);
+		sqfscat_help(TRUE);
 	}
 
 	return i;
@@ -4263,15 +4128,29 @@ static int parse_options(int argc, char *argv[])
 	for(i = 1; i < argc; i++) {
 		if(*argv[i] != '-')
 			break;
-		if(strcmp(argv[i], "-help") == 0 || strcmp(argv[i], "-h") == 0) {
-			print_options(stdout, argv[0]);
-			exit(0);
+		if(strcmp(argv[i], "-help") == 0 || strcmp(argv[i], "-h") == 0)
+			unsquashfs_help(FALSE);
+		else if(strcmp(argv[i], "-help-all") == 0 || strcmp(argv[i], "-ha") == 0)
+			unsquashfs_help_all();
+		else if(strcmp(argv[i], "-help-option") == 0 || strcmp(argv[i], "-ho") == 0) {
+			if(++i == argc) {
+				ERROR("unsquashfs: %s missing regex\n", argv[i - 1]);
+				unsquashfs_option_help(argv[i - 1]);
+			}
+
+			unsquashfs_option(argv[i - 1], argv[i]);
+		} else if(strcmp(argv[i], "-help-section") == 0 || strcmp(argv[i], "-hs") == 0) {
+			if(++i == argc) {
+				ERROR("unsquashfs: %s missing section\n", argv[i - 1]);
+				unsquashfs_option_help(argv[i - 1]);
+			}
+
+			unsquashfs_section(argv[i - 1], argv[i]);
 		} else if(strcmp(argv[i], "-pseudo-file") == 0 ||
 				strcmp(argv[i], "-pf") == 0) {
 			if(++i == argc) {
-				fprintf(stderr, "%s: -pf missing filename\n",
-					argv[0]);
-				exit(1);
+				fprintf(stderr, "unsquashfs: -pf missing filename\n");
+				unsquashfs_option_help(argv[i - 1]);
 			}
 			pseudo_name = argv[i];
 			pseudo_file = TRUE;
@@ -4283,9 +4162,9 @@ static int parse_options(int argc, char *argv[])
 				strcmp(argv[i], "-ex") == 0) {
 			res = parse_excludes(argc - i - 1, argv + i + 1);
 			if(res == 0) {
-				fprintf(stderr, "%s: -exclude-list missing "
-					"filenames or no ';' terminator\n", argv[0]);
-				exit(1);
+				fprintf(stderr, "unsquashfs: -exclude-list missing "
+					"filenames or no ';' terminator\n");
+				unsquashfs_option_help("-exclude-list");
 			}
 			i += res + 1;
 		} else if(strcmp(argv[i], "-no-exit-code") == 0 ||
@@ -4340,15 +4219,15 @@ static int parse_options(int argc, char *argv[])
 			if(xattrs_supported())
 				no_xattrs = FALSE;
 			else {
-				ERROR("%s: xattrs are unsupported in "
-					"this build\n", argv[0]);
+				ERROR("unsquashfs: xattrs are unsupported in "
+					"this build\n");
 				exit(1);
 			}
 		} else if(strcmp(argv[i], "-user-xattrs") == 0 ||
 				strcmp(argv[i], "-u") == 0) {
 			if(!xattrs_supported()) {
-				ERROR("%s: xattrs are unsupported in "
-						"this build\n", argv[0]);
+				ERROR("unsquashfs: xattrs are unsupported in "
+						"this build\n");
                                 exit(1);
 			} else {
 				xattr_include_preg = xattr_regex("^user.", "include");
@@ -4356,24 +4235,24 @@ static int parse_options(int argc, char *argv[])
 			}
 		} else if(strcmp(argv[i], "-xattrs-exclude") == 0) {
 			if(!xattrs_supported()) {
-				ERROR("%s: xattrs are unsupported in "
-						"this build\n", argv[0]);
+				ERROR("unsquashfs: xattrs are unsupported in "
+						"this build\n");
 				exit(1);
 			} else if(++i == argc) {
-				ERROR("%s: -xattrs-exclude missing regex pattern\n", argv[0]);
-				exit(1);
+				ERROR("unsquashfs: -xattrs-exclude missing regex pattern\n");
+				unsquashfs_option_help("-xattrs-exclude");
 			} else {
 				xattr_exclude_preg = xattr_regex(argv[i], "exclude");
 				no_xattrs = FALSE;
 			}
 		} else if(strcmp(argv[i], "-xattrs-include") == 0) {
 			if(!xattrs_supported()) {
-				ERROR("%s: xattrs are unsupported in "
-						"this build\n", argv[0]);
+				ERROR("unsquashfs: xattrs are unsupported in "
+						"this build\n");
 				exit(1);
 			} else if(++i == argc) {
-				ERROR("%s: -xattrs-include missing regex pattern\n", argv[0]);
-				exit(1);
+				ERROR("unsquashfs: -xattrs-include missing regex pattern\n");
+				unsquashfs_option_help("-xattrs-include");
 			} else {
 				xattr_include_preg = xattr_regex(argv[i], "include");
 				no_xattrs = FALSE;
@@ -4381,9 +4260,8 @@ static int parse_options(int argc, char *argv[])
 		} else if(strcmp(argv[i], "-dest") == 0 ||
 				strcmp(argv[i], "-d") == 0) {
 			if(++i == argc) {
-				fprintf(stderr, "%s: -dest missing filename\n",
-					argv[0]);
-				exit(1);
+				fprintf(stderr, "unsquashfs: -dest missing filename\n");
+				unsquashfs_option_help("-dest");
 			}
 			dest = argv[i];
 		} else if(strcmp(argv[i], "-processors") == 0 ||
@@ -4391,13 +4269,12 @@ static int parse_options(int argc, char *argv[])
 			if((++i == argc) || 
 					!parse_number(argv[i],
 						&processors)) {
-				ERROR("%s: -processors missing or invalid "
-					"processor number\n", argv[0]);
-				exit(1);
+				ERROR("unsquashfs: -processors missing or invalid "
+					"processor number\n");
+				unsquashfs_option_help("-processors");
 			}
 			if(processors < 1) {
-				ERROR("%s: -processors should be 1 or larger\n",
-					argv[0]);
+				ERROR("unsquashfs: -processors should be 1 or larger\n");
 				exit(1);
 			}
 		} else if(strcmp(argv[i], "-max-depth") == 0 ||
@@ -4405,18 +4282,17 @@ static int parse_options(int argc, char *argv[])
 			if((++i == argc) ||
 					!parse_number(argv[i],
 						&max_depth)) {
-				ERROR("%s: -max-depth missing or invalid "
-					"levels\n", argv[0]);
-				exit(1);
+				ERROR("unsquashfs: -max-depth missing or invalid "
+					"levels\n");
+				unsquashfs_option_help("-max-depth");
 			}
 		} else if(strcmp(argv[i], "-mem") == 0) {
 			long long number;
 
 			if((++i == argc) ||
 					!parse_numberll(argv[i], &number, 1)) {
-				ERROR("%s: -mem missing or invalid mem size\n",
-					 argv[0]);
-				exit(1);
+				ERROR("unsquashfs: -mem missing or invalid mem size\n");
+				unsquashfs_option_help("-mem");
 			}
 
 			/*
@@ -4424,14 +4300,14 @@ static int parse_options(int argc, char *argv[])
 			 * does not overflow a signed int
 			 */
 			if(number >= (1LL << 51)) {
-				ERROR("%s: -mem invalid mem size\n", argv[0]);
+				ERROR("unsquashfs: -mem invalid mem size\n");
 				exit(1);
 			}
 
 			number = number / 1048576;
 			if(number < 2) {
-				ERROR("%s: -mem should be 2 Mbytes or "
-					"larger\n", argv[0]);
+				ERROR("unsquashfs: -mem should be 2 Mbytes or "
+					"larger\n");
 				exit(1);
 			}
 			data_buffer_size = number / 2;
@@ -4447,31 +4323,30 @@ static int parse_options(int argc, char *argv[])
 			if((++i == argc) ||
 					!parse_number_percent(argv[i], &percent) ||
 					(percent < 1)) {
-				ERROR("%s: -mem-percent missing or invalid "
-					"percentage: it should be 1 - 75%\n",
-					 argv[0]);
-				exit(1);
+				ERROR("unsquashfs: -mem-percent missing or invalid "
+					"percentage: it should be 1 - 75%\n");
+				unsquashfs_option_help("-mem-percent");
 			}
 
 			phys_mem = get_physical_memory();
 
 			if(phys_mem == 0) {
-				ERROR("%s: -mem-percent unable to get physical "
-					"memory\n", argv[0]);
+				ERROR("unsquashfs: -mem-percent unable to get physical "
+					"memory\n");
 				exit(1);
 			}
 
 			if(multiply_overflow(phys_mem, percent)) {
-				ERROR("%s: -mem-percent requested phys mem too "
-					"large\n", argv[0]);
+				ERROR("unsquashfs: -mem-percent requested phys mem too "
+					"large\n");
 				exit(1);
 			}
 
 			phys_mem = phys_mem * percent / 100;
 
 			if(phys_mem < 2) {
-				ERROR("%s: -mem-percent mem too small, should "
-					"be 2 Mbytes or larger\n", argv[0]);
+				ERROR("unsquashfs: -mem-percent mem too small, should "
+					"be 2 Mbytes or larger\n");
 				exit(1);
 			}
 
@@ -4482,13 +4357,13 @@ static int parse_options(int argc, char *argv[])
 			if((++i == argc) ||
 					!parse_number(argv[i],
 						&data_buffer_size)) {
-				ERROR("%s: -data-queue missing or invalid "
-					"queue size\n", argv[0]);
+				ERROR("unsquashfs: -data-queue missing or invalid "
+					"queue size\n");
 				exit(1);
 			}
 			if(data_buffer_size < 1) {
-				ERROR("%s: -data-queue should be 1 Mbyte or "
-					"larger\n", argv[0]);
+				ERROR("unsquashfs: -data-queue should be 1 Mbyte or "
+					"larger\n");
 				exit(1);
 			}
 		} else if(strcmp(argv[i], "-frag-queue") == 0 ||
@@ -4496,13 +4371,13 @@ static int parse_options(int argc, char *argv[])
 			if((++i == argc) ||
 					!parse_number(argv[i],
 						&fragment_buffer_size)) {
-				ERROR("%s: -frag-queue missing or invalid "
-					"queue size\n", argv[0]);
+				ERROR("unsquashfs: -frag-queue missing or invalid "
+					"queue size\n");
 				exit(1);
 			}
 			if(fragment_buffer_size < 1) {
-				ERROR("%s: -frag-queue should be 1 Mbyte or "
-					"larger\n", argv[0]);
+				ERROR("unsquashfs: -frag-queue should be 1 Mbyte or "
+					"larger\n");
 				exit(1);
 			}
 		} else if(strcmp(argv[i], "-force") == 0 ||
@@ -4535,18 +4410,16 @@ static int parse_options(int argc, char *argv[])
 				strcmp(argv[i], "-ef") == 0 ||
 				strcmp(argv[i], "-e") == 0) {
 			if(++i == argc) {
-				fprintf(stderr, "%s: -extract-file missing filename\n",
-					argv[0]);
-				exit(1);
+				fprintf(stderr, "unsquashfs: -extract-file missing filename\n");
+				unsquashfs_option_help("-extract-file");
 			}
 			process_extract_files(argv[i]);
 		} else if(strcmp(argv[i], "-exclude-file") == 0 ||
 				strcmp(argv[i], "-excf") == 0 ||
 				strcmp(argv[i], "-exc") == 0) {
 			if(++i == argc) {
-				fprintf(stderr, "%s: -exclude-file missing filename\n",
-					argv[0]);
-				exit(1);
+				fprintf(stderr, "unsquashfs: -exclude-file missing filename\n");
+				unsquashfs_option_help("-exclude-file");
 			}
 			process_exclude_files(argv[i]);
 		} else if(strcmp(argv[i], "-regex") == 0 ||
@@ -4557,27 +4430,25 @@ static int parse_options(int argc, char *argv[])
 			if((++i == argc) ||
 					!parse_numberll(argv[i], &start_offset,
 									1)) {
-				ERROR("%s: %s missing or invalid offset size\n",
-							argv[0], argv[i - 1]);
-				exit(1);
+				ERROR("unsquashfs: %s missing or invalid offset size\n",
+							argv[i - 1]);
+				unsquashfs_option_help("-offset");
 			}
 		} else if(strcmp(argv[i], "-all-time") == 0 ||
 				strcmp(argv[i], "-all") == 0) {
 			if((++i == argc) ||
 					(!parse_number_unsigned(argv[i], &timeval)
 					&& !exec_date(argv[i], &timeval))) {
-				ERROR("%s: %s missing or invalid time value\n",
-							argv[0], argv[i - 1]);
-				exit(1);
+				ERROR("unsquashfs: %s missing or invalid time value\n",
+							argv[i - 1]);
+				unsquashfs_option_help("-all-time");
 			}
 			time_opt = TRUE;
 		} else if(strcmp(argv[i], "-full-precision") == 0 ||
 				strcmp(argv[i], "-full") == 0)
 			full_precision = TRUE;
-		else {
-			print_options(stderr, argv[0]);
-			exit(1);
-		}
+		else 
+			unsquashfs_invalid_option(argv[i]);
 	}
 
 	if(dest[0] == '\0' && !lsonly)
@@ -4625,9 +4496,11 @@ static int parse_options(int argc, char *argv[])
 #endif
 
 	if(i == argc) {
-		if(!version)
-			print_options(stderr, argv[0]);
-		exit(1);
+		if(!version) {
+			ERROR("unsquashfs: fatal error: no input filesystem specified on command line\n\n");
+			unsquashfs_help(TRUE);
+		} else
+			exit(1);
 	}
 
 	return i;
@@ -4640,6 +4513,8 @@ int main(int argc, char *argv[])
 	long res;
 	int exit_code = 0;
 	char *command;
+
+	check_pager();
 
 	pthread_mutex_init(&screen_mutex, NULL);
 	root_process = geteuid() == 0;

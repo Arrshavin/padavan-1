@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010, 2013, 2022
+ * Copyright (c) 2010, 2013, 2022, 2024
  * Phillip Lougher <phillip@squashfs.org.uk>
  *
  * This program is free software; you can redistribute it and/or
@@ -18,15 +18,17 @@
  *
  * lzma_xz_wrapper.c
  *
- * Support for LZMA1 compression using XZ Utils liblzma http://tukaani.org/xz/
+ * Support for LZMA1 compression using XZ Utils liblzma https://tukaani.org/xz/
  */
 
 #include <stdio.h>
 #include <string.h>
 #include <lzma.h>
+#include <sys/types.h>
 
 #include "squashfs_fs.h"
 #include "compressor.h"
+#include "print_pager.h"
 
 #define LZMA_PROPS_SIZE 5
 #define LZMA_UNCOMP_SIZE 8
@@ -150,9 +152,9 @@ failed:
 }
 
 
-static void lzma_usage(FILE *stream)
+static void lzma_usage(FILE *stream, int cols)
 {
-	fprintf(stream, "\t  (no options) (deprecated - no kernel support)\n");
+	autowrap_print(stream, "\t  (no options) (deprecated - no kernel support)\n", cols);
 }
 
 

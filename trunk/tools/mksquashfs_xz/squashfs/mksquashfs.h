@@ -4,7 +4,7 @@
  * Squashfs
  *
  * Copyright (c) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011
- * 2012, 2013, 2014, 2019, 2021, 2022, 2023
+ * 2012, 2013, 2014, 2019, 2021, 2022, 2023, 2024
  * Phillip Lougher <phillip@squashfs.org.uk>
  *
  * This program is free software; you can redistribute it and/or
@@ -146,8 +146,9 @@ struct append_file {
 #define I_COUNT_SIZE		128
 #define DIR_ENTRIES		32
 #define INODE_HASH_SIZE		65536
-#define INODE_HASH_MASK		(INODE_HASH_SIZE - 1)
-#define INODE_HASH(dev, ino)	(ino & INODE_HASH_MASK)
+#define INO_MASK(ino, shift)	((((unsigned long long) ino) >> shift) & 0xffff)
+#define INODE_HASH(dev, ino)	((INO_MASK(ino, 0) + INO_MASK(ino, 16) + \
+				INO_MASK(ino, 32) + INO_MASK(ino, 48)) & 0xffff)
 
 struct cached_dir_index {
 	struct squashfs_dir_index	index;

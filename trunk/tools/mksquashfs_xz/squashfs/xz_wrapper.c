@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010, 2011, 2012, 2013, 2021, 2022
+ * Copyright (c) 2010, 2011, 2012, 2013, 2021, 2022, 2024
  * Phillip Lougher <phillip@squashfs.org.uk>
  *
  * This program is free software; you can redistribute it and/or
@@ -19,7 +19,7 @@
  * xz_wrapper.c
  *
  * Support for XZ (LZMA2) compression using XZ Utils liblzma
- * http://tukaani.org/xz/
+ * https://tukaani.org/xz/
  */
 
 #include <stdio.h>
@@ -30,6 +30,22 @@
 #include "squashfs_fs.h"
 #include "xz_wrapper.h"
 #include "compressor.h"
+#include "print_pager.h"
+
+/*
+ * ARM64 filter was added in liblzma 5.4.0. Keep the build working with
+ * older versions too.
+ */
+#ifndef LZMA_FILTER_ARM64
+#define LZMA_FILTER_ARM64 LZMA_VLI_C(0x0A)
+#endif
+
+/*
+ * RISC-V filter was added in liblzma 5.6.0.
+ */
+#ifndef LZMA_FILTER_RISCV
+#define LZMA_FILTER_RISCV LZMA_VLI_C(0x0B)
+#endif
 
 static struct bcj bcj[] = {
 	{ "x86", LZMA_FILTER_X86, 0 },
@@ -38,6 +54,8 @@ static struct bcj bcj[] = {
 	{ "arm", LZMA_FILTER_ARM, 0 },
 	{ "armthumb", LZMA_FILTER_ARMTHUMB, 0 },
 	{ "sparc", LZMA_FILTER_SPARC, 0 },
+	{ "arm64", LZMA_FILTER_ARM64, 0 },
+	{ "riscv", LZMA_FILTER_RISCV, 0 },
 	{ NULL, LZMA_VLI_UNKNOWN, 0 }
 };
 
@@ -84,7 +102,7 @@ static int xz_options(char *argv[], int argc)
 						(name[n] == '\0' ||
 						 name[n] == ',')) {
 					if(bcj[i].selected == 0) {
-				 		bcj[i].selected = 1;
+						bcj[i].selected = 1;
 						filter_count++;
 					}
 					name += name[n] == ',' ? n + 1 : n;
@@ -96,8 +114,14 @@ static int xz_options(char *argv[], int argc)
 					"filter\n");
 				goto failed;
 			}
+			if(!lzma_filter_encoder_is_supported(bcj[i].id)) {
+				fprintf(stderr, "xz: -Xbcj %s: This filter "
+					"is not supported by the liblzma "
+					"version in use\n", bcj[i].name);
+				goto failed;
+			}
 		}
-	
+
 		return 1;
 	} else if(strcmp(argv[0], "-Xdict-size") == 0) {
 		char *b;
@@ -144,7 +168,7 @@ static int xz_options(char *argv[], int argc)
 	}
 
 	return -1;
-	
+
 failed:
 	return -2;
 }
@@ -188,9 +212,9 @@ static int xz_options_post(int block_size)
 		/*
 		 * dictionary_size must be storable in xz header as either
 		 * 2^n or as  2^n+2^(n+1)
-	 	*/
+		 */
 		n = ffs(dictionary_size) - 1;
-		if(dictionary_size != (1 << n) && 
+		if(dictionary_size != (1 << n) &&
 				dictionary_size != ((1 << n) + (1 << (n + 1)))) {
 			fprintf(stderr, "xz: -Xdict-size is an unsupported "
 				"value, dict-size must be storable in xz "
@@ -287,7 +311,7 @@ static int xz_extract_options(int block_size, void *buffer, int size)
 		/* check passed comp opts struct is of the correct length */
 		if(size != sizeof(struct comp_opts))
 			goto failed;
-					 
+
 		SQUASHFS_INSWAP_COMP_OPTS(comp_opts);
 
 		dictionary_size = comp_opts->dictionary_size;
@@ -298,7 +322,7 @@ static int xz_extract_options(int block_size, void *buffer, int size)
 		 * size should 2^n or 2^n+2^(n+1)
 		 */
 		n = ffs(dictionary_size) - 1;
-		if(dictionary_size != (1 << n) && 
+		if(dictionary_size != (1 << n) &&
 				dictionary_size != ((1 << n) + (1 << (n + 1))))
 			goto failed;
 	}
@@ -342,7 +366,7 @@ static void xz_display_options(void *buffer, int size)
 	 * size should 2^n or 2^n+2^(n+1)
 	 */
 	n = ffs(dictionary_size) - 1;
-	if(dictionary_size != (1 << n) && 
+	if(dictionary_size != (1 << n) &&
 			dictionary_size != ((1 << n) + (1 << (n + 1))))
 		goto failed;
 
@@ -370,7 +394,7 @@ static void xz_display_options(void *buffer, int size)
 failed:
 	fprintf(stderr, "xz: error reading stored compressor options from "
 		"filesystem!\n");
-}	
+}
 
 
 /*
@@ -451,11 +475,35 @@ static int xz_compress(void *strm, void *dest, void *src,  int size,
 
 		stream->opt.dict_size = stream->dictionary_size;
 
+		switch(filter->filter[0].id) {
+		case LZMA_FILTER_ARMTHUMB:
+		case LZMA_FILTER_RISCV:
+			/* 2-byte-aligned instructions */
+			stream->opt.lp = 1;
+			break;
+
+		case LZMA_FILTER_POWERPC:
+		case LZMA_FILTER_ARM:
+		case LZMA_FILTER_SPARC:
+		case LZMA_FILTER_ARM64:
+			/* 4-byte-aligned instructions */
+			stream->opt.lp = 2;
+			stream->opt.lc = 2;
+			break;
+
+		case LZMA_FILTER_IA64:
+			/* 16-byte-aligned instructions */
+			stream->opt.pb = 4;
+			stream->opt.lp = 4;
+			stream->opt.lc = 0;
+			break;
+		}
+
 		filter->length = 0;
 		res = lzma_stream_buffer_encode(filter->filter,
 			LZMA_CHECK_CRC32, NULL, src, size, filter->buffer,
 			&filter->length, block_size);
-	
+
 		if(res == LZMA_OK) {
 			if(!selected || selected->length > filter->length)
 				selected = filter;
@@ -465,8 +513,8 @@ static int xz_compress(void *strm, void *dest, void *src,  int size,
 
 	if(!selected)
 		/*
-	 	 * Output buffer overflow.  Return out of buffer space
-	 	 */
+		 * Output buffer overflow.  Return out of buffer space
+		 */
 		return 0;
 
 	if(selected->buffer != dest)
@@ -503,24 +551,21 @@ static int xz_uncompress(void *dest, void *src, int size, int outsize,
 }
 
 
-static void xz_usage(FILE *stream)
+static void xz_usage(FILE *stream, int cols)
 {
-	fprintf(stream, "\t  -Xbcj filter1,filter2,...,filterN\n");
-	fprintf(stream, "\t\tCompress using filter1,filter2,...,filterN in");
-	fprintf(stream, " turn\n\t\t(in addition to no filter), and choose");
-	fprintf(stream, " the best compression.\n");
-	fprintf(stream, "\t\tAvailable filters: x86, arm, armthumb,");
-	fprintf(stream, " powerpc, sparc, ia64\n");
-	fprintf(stream, "\t  -Xdict-size <dict-size>\n");
-	fprintf(stream, "\t\tUse <dict-size> as the XZ dictionary size.  The");
-	fprintf(stream, " dictionary size\n\t\tcan be specified as a");
-	fprintf(stream, " percentage of the block size, or as an\n\t\t");
-	fprintf(stream, "absolute value.  The dictionary size must be less");
-	fprintf(stream, " than or equal\n\t\tto the block size and 8192 bytes");
-	fprintf(stream, " or larger.  It must also be\n\t\tstorable in the xz");
-	fprintf(stream, " header as either 2^n or as 2^n+2^(n+1).\n\t\t");
-	fprintf(stream, "Example dict-sizes are 75%%, 50%%, 37.5%%, 25%%, or");
-	fprintf(stream, " 32K, 16K, 8K\n\t\tetc.\n");
+	autowrap_print(stream, "\t  -Xbcj filter1,filter2,...,filterN\n", cols);
+	autowrap_print(stream, "\t\tCompress using filter1,filter2,...,filterN "
+		"in turn (in addition to no filter), and choose the best "
+		"compression.  Available filters: x86, arm, armthumb, arm64, "
+		"powerpc, sparc, ia64, riscv\n", cols);
+	autowrap_print(stream, "\t  -Xdict-size <dict-size>\n", cols);
+	autowrap_print(stream, "\t\tUse <dict-size> as the XZ dictionary size."
+		"  The dictionary size can be specified as a percentage of the "
+		"block size, or as an absolute value.  The dictionary size "
+		"must be less than or equal to the block size and 8192 bytes "
+		"or larger.  It must also be storable in the xz header as "
+		"either 2^n or as 2^n+2^(n+1).  Example dict-sizes are 75%, "
+		"50%, 37.5%, 25%, or 32K, 16K, 8K etc.\n", cols);
 }
 
 
